@@ -681,8 +681,10 @@ function scoreSnapshot(){
 }
 
 function buildPayload(firm, contact, readable, snap){
-  // Web3Forms accepts a flat JSON object. We include payment details here
-  // (Web3Forms permits this — unlike the previous provider).
+  // IMPORTANT: No bank account number, payment amount, or "confirmed payment"
+  // wording is sent here — that content trips form-relay spam/security filters.
+  // Payment is handled entirely off-platform (bank transfer + Google Form receipt).
+  // Only a neutral, client-typed reference note is included to help you match records.
   const data={
     access_key: CONFIG.web3formsKey,
     subject: `New consultation intake — ${firm}`,
@@ -694,12 +696,8 @@ function buildPayload(firm, contact, readable, snap){
     Phone: contact.phone||'',
     Partners: contact.partners||'',
     Staff: contact.staff||'',
-    // payment (off-platform transfer; client-confirmed)
-    'Consultation total': CONFIG.feeTotal+' (incl. '+CONFIG.vatRate+' VAT)',
-    'Payment confirmed by client': answers['_paid']?'Yes':'No',
-    'Payment reference': answers['_payref']||'',
-    'Pay-to account': CONFIG.bank.account+' · '+CONFIG.bank.bankName+' · '+CONFIG.bank.name,
-    'Receipt': 'Client uploads receipt via the Google Form upload link'
+    // neutral reference only (no amounts, no account numbers)
+    'Reference note': answers['_payref']||''
   };
   // questionnaire answers (readable) + scores
   Object.keys(readable).forEach(k=> data[k]=readable[k]);

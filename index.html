@@ -685,25 +685,28 @@ function buildPayload(firm, contact, readable, snap){
   // wording is sent here — that content trips form-relay spam/security filters.
   // Payment is handled entirely off-platform (bank transfer + Google Form receipt).
   // Only a neutral, client-typed reference note is included to help you match records.
-  const data={
-    access_key: CONFIG.web3formsKey,
-    subject: `New consultation intake — ${firm}`,
-    from_name: firm,
-    // contact
-    Firm: firm,
-    Contact: contact.contact||'',
-    Email: contact.email||'',
-    Phone: contact.phone||'',
-    Partners: contact.partners||'',
-    Staff: contact.staff||'',
-    // neutral reference only (no amounts, no account numbers)
-    'Reference note': answers['_payref']||''
-  };
+  //
+  // We send FormData (not JSON) so the browser treats this as a "simple" request
+  // and skips the CORS preflight — JSON content-type triggers a preflight that
+  // Web3Forms' endpoint does not answer, which caused "Failed to fetch".
+  const fd=new FormData();
+  fd.append('access_key', CONFIG.web3formsKey);
+  fd.append('subject', `New consultation intake — ${firm}`);
+  fd.append('from_name', firm);
+  // contact
+  fd.append('Firm', firm);
+  fd.append('Contact', contact.contact||'');
+  fd.append('Email', contact.email||'');
+  fd.append('Phone', contact.phone||'');
+  fd.append('Partners', contact.partners||'');
+  fd.append('Staff', contact.staff||'');
+  // neutral reference only (no amounts, no account numbers)
+  fd.append('Reference note', answers['_payref']||'');
   // questionnaire answers (readable) + scores
-  Object.keys(readable).forEach(k=> data[k]=readable[k]);
-  Object.keys(snap).forEach(k=> data['SCORE: '+k]=snap[k]);
-  if(contact.email) data.replyto=contact.email; // Web3Forms reply-to
-  return data;
+  Object.keys(readable).forEach(k=> fd.append(k, readable[k]));
+  Object.keys(snap).forEach(k=> fd.append('SCORE: '+k, snap[k]));
+  if(contact.email) fd.append('replyto', contact.email); // Web3Forms reply-to
+  return fd;
 }
 
 async function submitAll(){
@@ -728,10 +731,12 @@ async function submitAll(){
   }
 
   try{
+    // No 'Content-Type' header — the browser sets multipart/form-data automatically,
+    // which keeps this a "simple" CORS request with no preflight.
     const res = await fetch('https://api.web3forms.com/submit',{
       method:'POST',
-      headers:{'Content-Type':'application/json','Accept':'application/json'},
-      body: JSON.stringify(buildPayload(firm,contact,readable,snap))
+      headers:{'Accept':'application/json'},
+      body: buildPayload(firm,contact,readable,snap)
     });
     const j=await res.json().catch(()=>({}));
     if(res.ok && j.success){ btn.disabled=false; computeResults(); }

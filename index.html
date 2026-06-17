@@ -8,6 +8,8 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.47.0/dist/tabler-icons.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
 :root{
   --navy:#2E3192; --navy-d:#22245f; --gold:#C9A35B; --green:#00A651; --blue:#1CA8DD;
@@ -221,7 +223,7 @@ const CONFIG = {
   /* 1) Create a free form at https://formspree.io, then paste your form ID here.
         It looks like "xayzwqlk". Until you do, submissions run in DEMO mode
         (nothing is sent; you'll just see a confirmation screen). */
-  formspreeId: "mgobbajz",
+  formspreeId: "xojzzdee",
 
   /* 2) Consultation fee and bank details shown on the payment step. */
   feeBase: "\u20A6100,000",
@@ -679,7 +681,10 @@ function scoreSnapshot(){
   return {dims,overall,snap};
 }
 
-function buildPayload(firm, contact, readable, snap, includeFile){
+function buildPayload(firm, contact, readable, snap){
+  // NOTE: No payment, bank, or amount data is sent here by design.
+  // Payment is handled entirely off-platform (bank transfer + Google Form receipt).
+  // This keeps the submission limited to questionnaire intake data only.
   const fd=new FormData();
   fd.append('_subject', `New consultation intake — ${firm}`);
   fd.append('Firm', firm);
@@ -688,13 +693,8 @@ function buildPayload(firm, contact, readable, snap, includeFile){
   fd.append('Phone', contact.phone||'');
   fd.append('Partners', contact.partners||'');
   fd.append('Staff', contact.staff||'');
-  fd.append('Consultation total', CONFIG.feeTotal+' (incl. '+CONFIG.vatRate+' VAT)');
-  fd.append('Payment confirmed by client', answers['_paid']?'Yes':'No');
-  fd.append('Payment reference', answers['_payref']||'');
-  fd.append('Receipt attached to this email', includeFile&&receiptFile?'Yes':'No (client to email/upload separately)');
   Object.keys(readable).forEach(k=> fd.append(k, readable[k]));
   Object.keys(snap).forEach(k=> fd.append('SCORE: '+k, snap[k]));
-  if(includeFile&&receiptFile) fd.append('Proof of payment', receiptFile, receiptFile.name);
   if(contact.email) fd.append('email', contact.email); // Formspree reply-to
   return fd;
 }
@@ -721,20 +721,9 @@ async function submitAll(){
   }
 
   const endpoint='https://formspree.io/f/'+CONFIG.formspreeId;
-  async function post(includeFile){
-    return fetch(endpoint,{method:'POST',body:buildPayload(firm,contact,readable,snap,includeFile),headers:{'Accept':'application/json'}});
-  }
 
   try{
-    // First try with the file (works if your Formspree plan allows uploads)
-    let res = await post(!!receiptFile);
-    if(!res.ok && receiptFile){
-      const j=await res.json().catch(()=>({}));
-      const msg=(j.errors&&j.errors[0]&&j.errors[0].message)||'';
-      // If uploads aren't permitted on the plan, retry WITHOUT the file so it still goes through
-      if(/upload/i.test(msg)){ res = await post(false); }
-      else throw new Error(msg||'Submission failed');
-    }
+    const res = await fetch(endpoint,{method:'POST',body:buildPayload(firm,contact,readable,snap),headers:{'Accept':'application/json'}});
     if(res.ok){ btn.disabled=false; computeResults(); }
     else {
       const j=await res.json().catch(()=>({}));
@@ -836,11 +825,11 @@ function renderResults(dims,overall,tier,tierName,tierBlurb){
     <h3 style="font-size:19px;font-weight:800;margin:4px 0 14px;letter-spacing:-.3px">Your fastest quick wins</h3>
     <div class="recos">${winsHtml}</div>
 
-    <div class="cta">
+    <div class="cta" id="ctaBlock">
       <h3>Thank you — your responses are in.</h3>
-      <p>We've received your answers and proof of payment for ${firm}. Our team will review everything and reach out within 1 business day to schedule your consultation and walk you through a tailored plan.</p>
+      <p>We've received your answers for ${firm}. Our team will review everything and reach out within 1 business day to schedule your consultation and walk you through a tailored plan.</p>
       <div class="row">
-        <button class="btn gold" onclick="downloadSummary()"><i class="ti ti-download"></i> Download my summary</button>
+        <button class="btn gold" id="dlBtn" onclick="downloadSummary()"><i class="ti ti-download"></i> Download my report (PDF)</button>
         <button class="btn outline" onclick="go(0)"><i class="ti ti-refresh"></i> Start over</button>
       </div>
     </div>`;
@@ -908,18 +897,70 @@ function launchConfetti(){
 }
 
 
-function downloadSummary(){
+async function downloadSummary(){
   const firm=(answers['firmName']&&answers['firmName'].firmName)||'Your firm';
-  const dims={}; Object.keys(DIM_META).forEach(d=>dims[d]=scoreDimension(d));
-  const overall=(Object.values(dims).reduce((a,b)=>a+b,0)/5);
-  let txt=`DIGITAL TRANSFORMATION READINESS SUMMARY\n${firm}\n${new Date().toLocaleDateString()}\n\n`;
-  txt+=`Overall readiness: ${Math.round(overall/3*100)}% (${ragLabel(overall)})\n\nDimension scores:\n`;
-  Object.keys(dims).forEach(d=> txt+=`  • ${DIM_META[d].label}: ${dims[d].toFixed(1)}/3 (${ragLabel(dims[d])})\n`);
-  txt+=`\nThis summary was generated from the client intake questionnaire.\nA detailed assessment and tailored proposal follow your consultation.\n`;
-  const blob=new Blob([txt],{type:'text/plain'});
-  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-  a.download=`${firm.replace(/[^a-z0-9]+/gi,'_')}_readiness_summary.txt`;a.click();
-  toast('Summary downloaded.');
+  const btn=document.getElementById('dlBtn');
+
+  // Guard: libraries must be loaded
+  if(typeof html2canvas==='undefined' || !(window.jspdf&&window.jspdf.jsPDF)){
+    toast('Preparing PDF tools… please try again in a moment.'); return;
+  }
+  if(btn){ btn.disabled=true; btn.innerHTML='<i class="ti ti-loader-2 spin"></i> Preparing PDF...'; }
+
+  const el=document.getElementById('results');
+  const cta=document.getElementById('ctaBlock');
+  if(cta) cta.style.display='none'; // don't capture the buttons/thank-you block into the PDF
+  // Temporarily neutralise entrance animations so capture is crisp & fully painted
+  const animated=el.querySelectorAll('.dim,.phase,.reco');
+  animated.forEach(n=>{ n.style.animation='none'; n.style.opacity='1'; n.style.transform='none'; });
+  // Ensure bars/gauge are at final state for the capture
+  el.querySelectorAll('.bar i').forEach(b=>{ if(b.dataset.w) b.style.width=b.dataset.w+'%'; });
+
+  try{
+    await new Promise(r=>setTimeout(r,350)); // let layout settle
+    const scale=Math.min(2, window.devicePixelRatio||1.5);
+    const canvas=await html2canvas(el,{scale:scale,backgroundColor:'#ffffff',useCORS:true,logging:false});
+    const img=canvas.toDataURL('image/png');
+    const { jsPDF }=window.jspdf;
+    const pdf=new jsPDF('p','pt','a4');
+    const pageW=pdf.internal.pageSize.getWidth();
+    const pageH=pdf.internal.pageSize.getHeight();
+    const margin=24;
+    const imgW=pageW-margin*2;
+    const imgH=canvas.height*(imgW/canvas.width);
+
+    // paginate across multiple A4 pages if the report is tall
+    let remaining=imgH, posY=margin, sourceY=0;
+    const pageContentH=pageH-margin*2;
+    if(imgH<=pageContentH){
+      pdf.addImage(img,'PNG',margin,margin,imgW,imgH,'','FAST');
+    } else {
+      // slice the canvas into page-height chunks
+      const pxPerPt=canvas.width/imgW;
+      const slicePx=pageContentH*pxPerPt;
+      let y=0, first=true;
+      while(y<canvas.height){
+        const slice=document.createElement('canvas');
+        slice.width=canvas.width;
+        slice.height=Math.min(slicePx,canvas.height-y);
+        const ctx=slice.getContext('2d');
+        ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,slice.width,slice.height);
+        ctx.drawImage(canvas,0,y,canvas.width,slice.height,0,0,canvas.width,slice.height);
+        const sliceImg=slice.toDataURL('image/png');
+        const sliceH=slice.height*(imgW/slice.width);
+        if(!first) pdf.addPage();
+        pdf.addImage(sliceImg,'PNG',margin,margin,imgW,sliceH,'','FAST');
+        first=false; y+=slicePx;
+      }
+    }
+    pdf.save(`${firm.replace(/[^a-z0-9]+/gi,'_')}_readiness_report.pdf`);
+    toast('Report downloaded as PDF.');
+  }catch(e){
+    toast('Could not generate PDF: '+e.message);
+  }finally{
+    if(cta) cta.style.display='';
+    if(btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-download"></i> Download my report (PDF)'; }
+  }
 }
 
 /* ============ INIT ============ */

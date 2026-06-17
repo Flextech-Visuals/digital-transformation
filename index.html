@@ -8,7 +8,6 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.47.0/dist/tabler-icons.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
 :root{
@@ -108,9 +107,9 @@ textarea{resize:vertical;min-height:80px}
 #results .gauge-wrap{display:flex;flex-wrap:wrap;gap:26px;align-items:center;margin:8px 0 30px}
 .gauge{position:relative;width:160px;height:160px;flex-shrink:0}
 .gauge svg{transform:rotate(-90deg)}
-.gauge .val{position:absolute;inset:0;display:grid;place-items:center;flex-direction:column;text-align:center}
-.gauge .val b{font-size:38px;font-weight:800;line-height:1}
-.gauge .val span{font-size:12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.6px}
+.gauge .val{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;line-height:1}
+.gauge .val b{font-size:36px;font-weight:800;line-height:1;display:block}
+.gauge .val span{font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.6px;margin-top:3px}
 .rsummary{flex:1;min-width:240px}
 .rsummary .tier{font-size:13px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--green)}
 .rsummary h3{font-size:24px;font-weight:800;margin:4px 0 8px;letter-spacing:-.4px}
@@ -220,10 +219,10 @@ textarea{resize:vertical;min-height:80px}
 <script>
 /* ============ CONFIG — EDIT THESE ============ */
 const CONFIG = {
-  /* 1) Create a free form at https://formspree.io, then paste your form ID here.
-        It looks like "xayzwqlk". Until you do, submissions run in DEMO mode
-        (nothing is sent; you'll just see a confirmation screen). */
-  formspreeId: "xojzzdee",
+  /* 1) Web3Forms access key (free at https://web3forms.com).
+        Submissions are emailed to the address you registered with Web3Forms.
+        Leave as "" to run in DEMO mode (nothing sent; just shows results). */
+  web3formsKey: "b940a219-6c9c-4234-9df0-a5914265ff1f",
 
   /* 2) Consultation fee and bank details shown on the payment step. */
   feeBase: "\u20A6100,000",
@@ -233,7 +232,7 @@ const CONFIG = {
   bank: { account:"1300577450", name:"Convexity Technologies Ltd", bankName:"Providus Bank" },
 
   /* 3) Optional: a link where clients upload their receipt (Google Drive upload form,
-        Dropbox request, etc.). Leave "" to hide. See notes from your developer. */
+        Dropbox request, etc.). Leave "" to hide. */
   receiptUploadUrl: "https://docs.google.com/forms/d/e/1FAIpQLScJetqstLPOiymun2QvN5WT5yn3zvodLCe3nOCx47XyJOuQIA/viewform",
 
   /* 4) Where the "Book consultation" button sends people (optional). */
@@ -682,21 +681,31 @@ function scoreSnapshot(){
 }
 
 function buildPayload(firm, contact, readable, snap){
-  // NOTE: No payment, bank, or amount data is sent here by design.
-  // Payment is handled entirely off-platform (bank transfer + Google Form receipt).
-  // This keeps the submission limited to questionnaire intake data only.
-  const fd=new FormData();
-  fd.append('_subject', `New consultation intake — ${firm}`);
-  fd.append('Firm', firm);
-  fd.append('Contact', contact.contact||'');
-  fd.append('Email', contact.email||'');
-  fd.append('Phone', contact.phone||'');
-  fd.append('Partners', contact.partners||'');
-  fd.append('Staff', contact.staff||'');
-  Object.keys(readable).forEach(k=> fd.append(k, readable[k]));
-  Object.keys(snap).forEach(k=> fd.append('SCORE: '+k, snap[k]));
-  if(contact.email) fd.append('email', contact.email); // Formspree reply-to
-  return fd;
+  // Web3Forms accepts a flat JSON object. We include payment details here
+  // (Web3Forms permits this — unlike the previous provider).
+  const data={
+    access_key: CONFIG.web3formsKey,
+    subject: `New consultation intake — ${firm}`,
+    from_name: firm,
+    // contact
+    Firm: firm,
+    Contact: contact.contact||'',
+    Email: contact.email||'',
+    Phone: contact.phone||'',
+    Partners: contact.partners||'',
+    Staff: contact.staff||'',
+    // payment (off-platform transfer; client-confirmed)
+    'Consultation total': CONFIG.feeTotal+' (incl. '+CONFIG.vatRate+' VAT)',
+    'Payment confirmed by client': answers['_paid']?'Yes':'No',
+    'Payment reference': answers['_payref']||'',
+    'Pay-to account': CONFIG.bank.account+' · '+CONFIG.bank.bankName+' · '+CONFIG.bank.name,
+    'Receipt': 'Client uploads receipt via the Google Form upload link'
+  };
+  // questionnaire answers (readable) + scores
+  Object.keys(readable).forEach(k=> data[k]=readable[k]);
+  Object.keys(snap).forEach(k=> data['SCORE: '+k]=snap[k]);
+  if(contact.email) data.replyto=contact.email; // Web3Forms reply-to
+  return data;
 }
 
 async function submitAll(){
@@ -713,22 +722,22 @@ async function submitAll(){
   const {snap}=scoreSnapshot();
   const contact=answers['firmName']||{};
 
-  // DEMO mode if no Formspree ID set
-  if(!CONFIG.formspreeId || CONFIG.formspreeId==='YOUR_FORM_ID'){
+  // DEMO mode if no key set
+  if(!CONFIG.web3formsKey){
     setTimeout(()=>{ btn.disabled=false; computeResults();
-      toast('Demo mode: add your Formspree ID to receive responses.'); }, 800);
+      toast('Demo mode: add your Web3Forms key to receive responses.'); }, 800);
     return;
   }
 
-  const endpoint='https://formspree.io/f/'+CONFIG.formspreeId;
-
   try{
-    const res = await fetch(endpoint,{method:'POST',body:buildPayload(firm,contact,readable,snap),headers:{'Accept':'application/json'}});
-    if(res.ok){ btn.disabled=false; computeResults(); }
-    else {
-      const j=await res.json().catch(()=>({}));
-      throw new Error((j.errors&&j.errors[0]&&j.errors[0].message)||'Submission failed');
-    }
+    const res = await fetch('https://api.web3forms.com/submit',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Accept':'application/json'},
+      body: JSON.stringify(buildPayload(firm,contact,readable,snap))
+    });
+    const j=await res.json().catch(()=>({}));
+    if(res.ok && j.success){ btn.disabled=false; computeResults(); }
+    else { throw new Error(j.message||'Submission failed'); }
   }catch(e){
     btn.disabled=false; btn.innerHTML='Submit & see my results <i class="ti ti-arrow-right"></i>';
     toast('Could not submit: '+e.message+'. Please try again.');
@@ -791,10 +800,18 @@ function renderResults(dims,overall,tier,tierName,tierBlurb){
   const winsHtml=wins.map((w,i)=>`<div class="reco" style="animation-delay:${(i*0.08).toFixed(2)}s">
     <i class="ti ti-bolt"></i><div><b>${w.title}</b><p>${w.text}</p></div></div>`).join('');
 
+  // Personalised intro referencing their stated goals
+  const drivers=chosenMulti('drivers');
+  const pains=chosenMulti('pain');
+  let intro=`Based on the answers you gave, here's where ${firm} stands today and what your transformation could look like.`;
+  if(drivers.length) intro+=` You told us your main goal${drivers.length>1?'s are':' is'} ${drivers.join(', ').toLowerCase()}`;
+  if(pains.length) intro+=`${drivers.length?', and that':' You said'} your biggest pain point${pains.length>1?'s are':' is'} ${pains.join(', ').toLowerCase()}`;
+  if(drivers.length||pains.length) intro+=` — the plan below is shaped around that.`;
+
   document.getElementById('results').innerHTML=`
     <span class="eyebrow"><i class="ti ti-confetti"></i> Your results</span>
     <h2>${firm}'s readiness snapshot</h2>
-    <p class="sub">Based on your answers, here's where your firm stands and what your transformation could look like.</p>
+    <p class="sub">${intro}</p>
 
     <div class="gauge-wrap">
       <div class="gauge">
@@ -845,24 +862,93 @@ function renderResults(dims,overall,tier,tierName,tierBlurb){
   },120); });
 }
 
-function riskText(d,v){
-  const T={
-    tech:"Manual processes and fragmented data are slowing your team and creating error risk. Cloud consolidation and automation are the priority.",
-    people:"Skills and change-readiness gaps could stall adoption. A structured training plan and a named digital champion come first.",
-    clients:"Your client engagement is still largely traditional — a real opportunity, but also a retention risk as competitors digitise.",
-    cyber:"Your security posture leaves the firm exposed to BEC, ransomware and phishing. MFA, access controls and an incident plan are urgent.",
-    ndpa:"NDPA gaps create legal and financial exposure (penalties up to 2% of revenue or \u20A610m). Compliance documentation should be addressed immediately."
-  };
-  return T[d];
+// Helper: return the exact option text the client selected for a single-choice question
+function chosen(qid){
+  const q=labelFor(qid); if(!q) return null;
+  const a=answers[qid];
+  if(a==null) return null;
+  return q.opts[a];
 }
+// Helper: did they pick a "weak" option (score 1) on this question?
+function weakOn(qid){
+  const q=labelFor(qid); const a=answers[qid];
+  if(!q||!q.score||a==null) return false;
+  return q.score[a]===1;
+}
+// Helper: list of selected option texts for a multi question
+function chosenMulti(qid){
+  const q=labelFor(qid); const a=answers[qid];
+  if(!q||!Array.isArray(a)) return [];
+  return a.map(i=>q.opts[i]);
+}
+
+// Build a risk paragraph that references the client's actual answers in that dimension
+function riskText(d,v){
+  const bits=[];
+  if(d==='tech'){
+    const m=chosenMulti('manual');
+    if(m.length) bits.push(`you told us ${m.length>1?'several tasks are':'a task is'} still done by hand (${m.join(', ').toLowerCase()})`);
+    const st=chosen('storage'); if(st&&weakOn('storage')) bits.push(`documents are kept as "${st.toLowerCase()}"`);
+    const ig=chosen('integrate'); if(ig&&weakOn('integrate')) bits.push(`your systems involve "${ig.toLowerCase()}"`);
+    if(weakOn('backup')) bits.push(`backups are not automatic`);
+    const lead=bits.length?`Based on your answers — ${bits.join('; ')} — `:'';
+    return `${lead}manual processes and fragmented data are slowing your team and creating error risk. Cloud consolidation and automation should be the first priority.`;
+  }
+  if(d==='people'){
+    if(weakOn('champion')) bits.push(`there's no clear internal digital champion`);
+    const cf=chosen('comfort'); if(cf&&weakOn('comfort')) bits.push(`team comfort with tools is "${cf.toLowerCase()}"`);
+    if(weakOn('leaders')) bits.push(`partners rarely use digital tools themselves`);
+    if(weakOn('training')) bits.push(`there's no regular digital training`);
+    const lead=bits.length?`You indicated ${bits.join('; ')}, so `:'';
+    return `${lead}skills and change-readiness gaps could stall adoption. A structured training plan and a named digital champion come first.`;
+  }
+  if(d==='clients'){
+    if(weakOn('portal')) bits.push(`you don't yet offer a client portal`);
+    const cm=chosenMulti('comms'); if(cm.includes('In-person only')) bits.push(`client contact is in-person only`);
+    if(weakOn('presence')) bits.push(`your online presence is limited`);
+    const lead=bits.length?`Since ${bits.join('; ')}, `:'';
+    return `${lead}your client engagement is still largely traditional — a real opportunity, but also a retention risk as competitors digitise.`;
+  }
+  if(d==='cyber'){
+    if(weakOn('mfa')) bits.push(`multi-factor authentication isn't fully in place`);
+    if(weakOn('bec')) bits.push(`payment-change requests aren't verified by a second channel`);
+    if(weakOn('incident')) bits.push(`there's no tested incident-response plan`);
+    if(weakOn('access')) bits.push(`data access isn't tightly role-based`);
+    const lead=bits.length?`You flagged that ${bits.join('; ')} — `:'';
+    return `${lead}this leaves the firm exposed to business email compromise, ransomware and phishing. MFA, access controls and an incident plan are urgent.`;
+  }
+  if(d==='ndpa'){
+    if(weakOn('aware')) bits.push(`NDPA awareness is limited`);
+    if(weakOn('registered')) bits.push(`NDPC registration isn't confirmed`);
+    if(weakOn('dpa')) bits.push(`vendor data-processing agreements aren't in place`);
+    if(weakOn('record')) bits.push(`there's no record of data held`);
+    const lead=bits.length?`You indicated ${bits.join('; ')}, which `:'These gaps ';
+    return `${lead}create legal and financial exposure (NDPA penalties reach 2% of revenue or \u20A610m). Compliance documentation should be addressed immediately.`;
+  }
+  return '';
+}
+
+// Quick wins, each tied to specific selected answers
 function buildWins(dims){
   const wins=[];
-  if((answers['manual']||[]).length) wins.push({title:"Automate manual work",text:"You flagged tasks still done by hand. Automating invoicing, reconciliations and payroll frees real capacity fast."});
-  if(answers['mfa']!==0) wins.push({title:"Turn on multi-factor authentication",text:"Enabling MFA everywhere is the single highest-impact, lowest-cost security step — deployable in days."});
-  if(answers['portal']!==0) wins.push({title:"Launch a client portal",text:"A branded portal for documents, dashboards and e-signature instantly modernises the client experience."});
-  if(answers['aware']!==0||answers['record']!==0) wins.push({title:"Start your NDPA compliance file",text:"Documenting lawful basis, vendor agreements and a data record closes your biggest compliance gaps."});
-  if(answers['proactive']===0) wins.push({title:"Offer proactive advisory",text:"You're keen on this — live dashboards for cash flow and tax deadlines turn you into a year-round trusted advisor."});
-  if(wins.length<3) wins.push({title:"Centralise your data",text:"Moving files to a secure, searchable cloud workspace ends scattered email and folders."});
+  const m=chosenMulti('manual');
+  if(m.length) wins.push({title:"Automate your manual tasks",
+    text:`You're still doing ${m.join(', ').toLowerCase()} by hand. Automating ${m.length>1?'these':'this'} frees real capacity within weeks.`});
+  if(weakOn('mfa')) wins.push({title:"Turn on multi-factor authentication",
+    text:`You said MFA is "${(chosen('mfa')||'').toLowerCase()}". Enabling it everywhere is the highest-impact, lowest-cost security step — deployable in days.`});
+  if(weakOn('portal')) wins.push({title:"Launch a client portal",
+    text:`You don't currently offer a portal. A branded space for documents, dashboards and e-signature instantly modernises the client experience.`});
+  if(weakOn('aware')||weakOn('record')||weakOn('dpa')) wins.push({title:"Start your NDPA compliance file",
+    text:`Documenting your lawful basis, vendor agreements and a data record closes the compliance gaps you flagged.`});
+  if(answers['proactive']===0) wins.push({title:"Offer proactive advisory",
+    text:`You're keen on this — live dashboards for cash flow and tax deadlines turn you into a year-round trusted advisor.`});
+  if(weakOn('storage')||weakOn('integrate')) wins.push({title:"Centralise your data",
+    text:`Moving files into a secure, searchable cloud workspace ends scattered storage and re-keying.`});
+  if(weakOn('champion')) wins.push({title:"Appoint a digital champion",
+    text:`Naming one enthusiastic staff member to lead adoption dramatically improves how new tools land.`});
+  // Always ensure at least 3 meaningful wins
+  if(wins.length<3) wins.push({title:"Run a readiness deep-dive",
+    text:`A short diagnostic will turn this snapshot into a concrete, sequenced action plan for your firm.`});
   return wins.slice(0,4);
 }
 function buildRoadmap(tier){
@@ -899,66 +985,166 @@ function launchConfetti(){
 
 async function downloadSummary(){
   const firm=(answers['firmName']&&answers['firmName'].firmName)||'Your firm';
+  const contact=answers['firmName']||{};
   const btn=document.getElementById('dlBtn');
-
-  // Guard: libraries must be loaded
-  if(typeof html2canvas==='undefined' || !(window.jspdf&&window.jspdf.jsPDF)){
-    toast('Preparing PDF tools… please try again in a moment.'); return;
-  }
+  if(!(window.jspdf&&window.jspdf.jsPDF)){ toast('Preparing PDF… try again in a moment.'); return; }
   if(btn){ btn.disabled=true; btn.innerHTML='<i class="ti ti-loader-2 spin"></i> Preparing PDF...'; }
 
-  const el=document.getElementById('results');
-  const cta=document.getElementById('ctaBlock');
-  if(cta) cta.style.display='none'; // don't capture the buttons/thank-you block into the PDF
-  // Temporarily neutralise entrance animations so capture is crisp & fully painted
-  const animated=el.querySelectorAll('.dim,.phase,.reco');
-  animated.forEach(n=>{ n.style.animation='none'; n.style.opacity='1'; n.style.transform='none'; });
-  // Ensure bars/gauge are at final state for the capture
-  el.querySelectorAll('.bar i').forEach(b=>{ if(b.dataset.w) b.style.width=b.dataset.w+'%'; });
-
   try{
-    await new Promise(r=>setTimeout(r,350)); // let layout settle
-    const scale=Math.min(2, window.devicePixelRatio||1.5);
-    const canvas=await html2canvas(el,{scale:scale,backgroundColor:'#ffffff',useCORS:true,logging:false});
-    const img=canvas.toDataURL('image/png');
-    const { jsPDF }=window.jspdf;
-    const pdf=new jsPDF('p','pt','a4');
-    const pageW=pdf.internal.pageSize.getWidth();
-    const pageH=pdf.internal.pageSize.getHeight();
-    const margin=24;
-    const imgW=pageW-margin*2;
-    const imgH=canvas.height*(imgW/canvas.width);
+    const dims={}; Object.keys(DIM_META).forEach(d=>dims[d]=scoreDimension(d));
+    const overall=Object.values(dims).reduce((a,b)=>a+b,0)/5;
+    const pct=Math.round(overall/3*100);
+    const ordered=Object.keys(dims).sort((a,b)=>dims[a]-dims[b]);
+    let tier; if(overall<1.7)tier='red'; else if(overall<2.4)tier='amber'; else tier='green';
+    const tierName=overall<1.7?'Quick-Start foundation':overall<2.4?'Standard transformation':'Full transformation';
 
-    // paginate across multiple A4 pages if the report is tall
-    let remaining=imgH, posY=margin, sourceY=0;
-    const pageContentH=pageH-margin*2;
-    if(imgH<=pageContentH){
-      pdf.addImage(img,'PNG',margin,margin,imgW,imgH,'','FAST');
-    } else {
-      // slice the canvas into page-height chunks
-      const pxPerPt=canvas.width/imgW;
-      const slicePx=pageContentH*pxPerPt;
-      let y=0, first=true;
-      while(y<canvas.height){
-        const slice=document.createElement('canvas');
-        slice.width=canvas.width;
-        slice.height=Math.min(slicePx,canvas.height-y);
-        const ctx=slice.getContext('2d');
-        ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,slice.width,slice.height);
-        ctx.drawImage(canvas,0,y,canvas.width,slice.height,0,0,canvas.width,slice.height);
-        const sliceImg=slice.toDataURL('image/png');
-        const sliceH=slice.height*(imgW/slice.width);
-        if(!first) pdf.addPage();
-        pdf.addImage(sliceImg,'PNG',margin,margin,imgW,sliceH,'','FAST');
-        first=false; y+=slicePx;
-      }
+    const { jsPDF }=window.jspdf;
+    const doc=new jsPDF('p','pt','a4');
+    const W=doc.internal.pageSize.getWidth(), H=doc.internal.pageSize.getHeight();
+    const M=48; let y=0;
+    const NAVY=[46,49,146], GOLD=[201,163,91], GREY=[80,84,100], LIGHT=[150,154,168];
+    const rgbFor=v=> v<1.7?[192,57,43] : v<2.4?[230,126,34] : [0,166,81];
+    const ragText=v=> v<1.7?'Needs attention' : v<2.4?'Developing' : 'Strong';
+
+    function footer(){
+      doc.setDrawColor(230,231,238); doc.setLineWidth(0.5); doc.line(M,H-34,W-M,H-34);
+      doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(...LIGHT);
+      doc.text('Digital Transformation Readiness Report · Confidential', M, H-22);
+      doc.text(new Date().toLocaleDateString(), W-M, H-22, {align:'right'});
     }
-    pdf.save(`${firm.replace(/[^a-z0-9]+/gi,'_')}_readiness_report.pdf`);
+    function ensure(space){ if(y>H-space){ footer(); doc.addPage(); y=M; } }
+    function pdfSafe(t){ return (t||'').replace(/\u20A6/g,'NGN '); }
+    function wrap(txt,size,color,maxW,lh){
+      doc.setFontSize(size); doc.setTextColor(...color);
+      const lines=doc.splitTextToSize(pdfSafe(txt),maxW||(W-M*2));
+      lines.forEach(ln=>{ ensure(50); doc.text(ln,M,y); y+=lh||(size*1.4); });
+    }
+
+    /* ---- HEADER BAR ---- */
+    doc.setFillColor(...NAVY); doc.rect(0,0,W,96,'F');
+    doc.setFillColor(...GOLD); doc.rect(0,96,W,4,'F');
+    doc.setFont('helvetica','bold'); doc.setFontSize(20); doc.setTextColor(255,255,255);
+    doc.text('Digital Transformation Readiness', M, 46);
+    doc.setFont('helvetica','normal'); doc.setFontSize(12); doc.setTextColor(214,217,240);
+    doc.text(firm, M, 68);
+    doc.setFontSize(9); doc.setTextColor(190,194,225);
+    doc.text(new Date().toLocaleDateString(), W-M, 46, {align:'right'});
+    if(contact.contact) doc.text(contact.contact, W-M, 62, {align:'right'});
+    if(contact.email) doc.text(contact.email, W-M, 76, {align:'right'});
+    y=132;
+
+    /* ---- SCORE GAUGE (vector) ---- */
+    const cx=M+54, cy=y+44, r=40;
+    const col=rgbFor(overall);
+    // track
+    doc.setLineWidth(9); doc.setDrawColor(230,231,238);
+    doc.circle(cx,cy,r,'S');
+    // arc (approximate with line segments)
+    doc.setDrawColor(...col); doc.setLineCap('round');
+    const start=-Math.PI/2, end=start+(pct/100)*Math.PI*2; const steps=Math.max(2,Math.round((end-start)/0.12));
+    let px=cx+r*Math.cos(start), py=cy+r*Math.sin(start);
+    for(let i=1;i<=steps;i++){ const a=start+(end-start)*(i/steps); const nx=cx+r*Math.cos(a), ny=cy+r*Math.sin(a); doc.line(px,py,nx,ny); px=nx;py=ny; }
+    doc.setFont('helvetica','bold'); doc.setFontSize(22); doc.setTextColor(...col);
+    doc.text(pct+'%', cx, cy+3, {align:'center'});
+    doc.setFont('helvetica','normal'); doc.setFontSize(7); doc.setTextColor(...LIGHT);
+    doc.text('READY', cx, cy+15, {align:'center'});
+    // summary text beside gauge
+    const tx=M+120;
+    doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(...col);
+    doc.text('RECOMMENDED STARTING POINT', tx, y+18);
+    doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.setTextColor(...NAVY);
+    doc.text(tierName, tx, y+40);
+    doc.setFont('helvetica','normal'); doc.setFontSize(9.5); doc.setTextColor(...GREY);
+    const blurb=overall<1.7?'Key foundations need attention first. We recommend stabilising security & compliance and fixing critical gaps before scaling.'
+      :overall<2.4?'You have a developing base to build on. A structured strategy with a piloted solution and cyber hardening will move you forward quickly.'
+      :'You have a strong foundation. You are ready for firm-wide rollout, new advisory products, and an ongoing evolution partnership.';
+    const bl=doc.splitTextToSize(blurb, W-tx-M); doc.text(bl, tx, y+56);
+    y=y+110;
+
+    /* ---- DIMENSION SCORES ---- */
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(...NAVY);
+    doc.text('Readiness by area', M, y); y+=20;
+    ordered.forEach(d=>{
+      ensure(60);
+      const v=dims[d], c=rgbFor(v), m=DIM_META[d];
+      doc.setFont('helvetica','bold'); doc.setFontSize(10.5); doc.setTextColor(40,42,55);
+      doc.text(m.label, M, y);
+      doc.setTextColor(...c); doc.setFontSize(9.5);
+      doc.text(`${ragText(v)} · ${v.toFixed(1)}/3`, W-M, y, {align:'right'});
+      y+=8;
+      // bar
+      const bw=W-M*2, bh=7;
+      doc.setFillColor(232,233,240); doc.roundedRect(M,y,bw,bh,3,3,'F');
+      doc.setFillColor(...c); doc.roundedRect(M,y,bw*(v/3),bh,3,3,'F');
+      y+=24;
+    });
+    y+=6;
+
+    /* ---- ROADMAP ---- */
+    ensure(80);
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(...NAVY);
+    doc.text('Your transformation roadmap', M, y); y+=20;
+    const rm=buildRoadmap(tier);
+    rm.forEach((ph,i)=>{
+      ensure(70);
+      doc.setFillColor(...NAVY); doc.circle(M+9,y-3,9,'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(9); doc.setTextColor(255,255,255);
+      doc.text(String(i+1), M+9, y, {align:'center'});
+      doc.setFont('helvetica','bold'); doc.setFontSize(10.5); doc.setTextColor(40,42,55);
+      doc.text(ph.t, M+28, y-4);
+      doc.setFont('helvetica','bold'); doc.setFontSize(8.5); doc.setTextColor(28,168,221);
+      doc.text(ph.d, M+28, y+8);
+      doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(...GREY);
+      const pl=doc.splitTextToSize(pdfSafe(ph.p), W-M-(M+28)); doc.text(pl, M+28, y+20);
+      y+= 30 + pl.length*11;
+    });
+    y+=4;
+
+    /* ---- PRIORITIES ---- */
+    ensure(80);
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(...NAVY);
+    doc.text('Priorities to address first', M, y); y+=18;
+    ordered.slice(0,2).forEach(d=>{
+      ensure(70);
+      const txt=pdfSafe(riskText(d,dims[d]));
+      doc.setFillColor(192,57,43); doc.rect(M,y-9,3,14,'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(10.5); doc.setTextColor(40,42,55);
+      doc.text(DIM_META[d].label, M+10, y);
+      y+=14;
+      doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(...GREY);
+      const tl=doc.splitTextToSize(txt, W-M-(M+10)); doc.text(tl, M+10, y);
+      y+= tl.length*11 + 12;
+    });
+    y+=4;
+
+    /* ---- QUICK WINS ---- */
+    ensure(80);
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); doc.setTextColor(...NAVY);
+    doc.text('Your fastest quick wins', M, y); y+=18;
+    buildWins(dims).forEach(w=>{
+      ensure(60);
+      doc.setFillColor(0,166,81); doc.rect(M,y-9,3,14,'F');
+      doc.setFont('helvetica','bold'); doc.setFontSize(10.5); doc.setTextColor(40,42,55);
+      doc.text(w.title, M+10, y);
+      y+=14;
+      doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(...GREY);
+      const wl=doc.splitTextToSize(pdfSafe(w.text), W-M-(M+10)); doc.text(wl, M+10, y);
+      y+= wl.length*11 + 12;
+    });
+
+    /* ---- CLOSING NOTE ---- */
+    ensure(60);
+    y+=6; doc.setDrawColor(230,231,238); doc.line(M,y,W-M,y); y+=18;
+    doc.setFont('helvetica','italic'); doc.setFontSize(9); doc.setTextColor(...LIGHT);
+    const note=doc.splitTextToSize('This snapshot was generated from your intake responses. A detailed assessment and tailored proposal follow your consultation session.', W-M*2);
+    doc.text(note, M, y);
+
+    footer();
+    doc.save(`${firm.replace(/[^a-z0-9]+/gi,'_')}_readiness_report.pdf`);
     toast('Report downloaded as PDF.');
   }catch(e){
     toast('Could not generate PDF: '+e.message);
   }finally{
-    if(cta) cta.style.display='';
     if(btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-download"></i> Download my report (PDF)'; }
   }
 }
